@@ -6,37 +6,28 @@ import (
 	"fmt"
 	"net/http"
 	"io"
-	"os"
-	"path"
-	"path/filepath"
+	"database/sql"
 	"strings"
-	"sync"
+	_ "github.com/lib/pq"
 )
 
-type Promotions struct {
-	rootDir string
-	switchingMutex	  *sync.Mutex
+type Database struct {
+	db	*sql.DB
 }
 
 type Api struct {
 	server *http.Server
-	promotions *Promotions
+	database *Database
 }
 
 type Record struct {
 	Id	string	`json: "id"`
-	Price	string	`json: "price"`
+	Price	float64	`json: "price"`
 	ExpDate string	`json: "expiration_date"`
 
 }
 
-func (p *Promotions) determineFileName(uuid string) string {
-	shards := strings.Split(uuid[0:8], "")
-	shardPath := path.Join(shards...)
-	return path.Join(p.rootDir, "staging", shardPath, uuid[9:])
-}
-
-func (p *Promotions) processNewFile(input io.Reader) error {
+func (d *Database) processNewFile(input io.Reader) error {
 	// Copy things and process them
 	r := csv.NewReader(input)
 
@@ -52,37 +43,14 @@ func (p *Promotions) processNewFile(input io.Reader) error {
 		// In production, I would validate that all these values
 		// are in the format we expect them to be, including that
 		// the UUID is structurally valid
-		record := Record{
-			Id: row[0],
-			Price: row[1],
-			ExpDate: row[2],
-		}
 
-		jsonRecord, err := json.Marshal(record)
+		stmt, err := d.db.Prepare("INSERT INTO promotions (id, price, exp_date) VALUES ($1,$2,$3)")
 		if err != nil {
 			return err
 		}
-		filename := p.determineFileName(record.Id)
+		defer stmt.Close()
 
-		err = os.MkdirAll(filepath.Dir(filename), 0700)
-		if err != nil {
-			return err
-		}
-
-		file, err := os.Create(filename)
-		if err != nil {
-			return err
-		}
-
-		_, err = file.Write(jsonRecord)
-		if err != nil {
-			return err
-		}
-
-		err = file.Close()
-		if err != nil {
-			return err
-		}
+		stmt.Exec(row[0], row[1], row[2])
 	}
 
 	// Once we've build the staging file tree, we'll rename it to be production
@@ -92,13 +60,37 @@ func (p *Promotions) processNewFile(input io.Reader) error {
 	return nil
 }
 
-func (p *Promotions) readPromotion(id string) (string, error) {
-	// Look up the file and return it
-	return "", nil
+func (d *Database) readPromotion(id string) ([]byte, error) {
+	row := d.db.QueryRow("SELECT price, exp_date FROM promotions WHERE id = $1;", id)
+	r := Record{Id: id}
+	err := row.Scan(&r.Price, &r.ExpDate)
+	if err == sql.ErrNoRows {
+		return []byte{}, nil
+	}
+	if err != nil {
+		return []byte{}, err
+	}
+
+	value, err := json.Marshal(r);
+
+	return value, err
+}
+
+func NewDatabase() (*Database, error) {
+	// In production, we'd use something like a DATABASE_URL environment
+	// variable to get this value
+	db, err := sql.Open("postgres", "postgres://pg@localhost/promodb?sslmode=disable")
+	if err != nil {
+		return nil, err
+	}
+	return &Database{db}, err
 }
 
 func NewApiServer(address, rootDir string) (*Api, error) {
-	promotions := Promotions{rootDir, &sync.Mutex{}}
+	database, err := NewDatabase()
+	if err != nil {
+		return nil, err
+	}
 
 	serveMux := http.NewServeMux()
 
@@ -106,7 +98,7 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 
 	serveMux.HandleFunc("/promotions", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == "POST" {
-			err := promotions.processNewFile(req.Body)
+			err := database.processNewFile(req.Body)
 			if err != nil{
 				fmt.Printf("ERROR: %s\n", err)
 			}
@@ -119,7 +111,24 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 
 	serveMux.HandleFunc("/promotions/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == "GET" {
-			fmt.Fprintf(w, "Looking up: %s", req.URL.Path)
+			// where we look it up and write to response of a specific promotion
+			// TODO: figure out promoId := ...
+			// database.readPromotion(promoId)
+			_id := strings.Split(req.URL.Path)
+			id = _id[len(_id)]
+			value, err := database.readPromotion(id)
+			fmt.Printf("%+v %+v\n", value, err);
+			if err != nil {
+				fmt.Printf("ERROR: %s\n", err)
+			}
+			if len(value) == 0 {
+				http.NotFound(w, req)
+				return
+			}
+			_, err = w.Write(value)
+			if err != nil {
+				fmt.Printf("ERROR: %s\n", err)
+			}
 		} else {
 			http.NotFound(w, req)
 			return
@@ -130,11 +139,14 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 		Addr: address,
 		Handler: serveMux,
 	}
-	api := Api{&server, &promotions}
+	api := Api{&server, database}
 	return &api, nil
 }
 
 func main() {
-	server, _ := NewApiServer(":8080", "./root");
+	server, err := NewApiServer(":8080", "./root");
+	if err != nil {
+		fmt.Printf("ERROR: %s", err)
+	}
 	server.server.ListenAndServe()
 }
