@@ -1,61 +1,73 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"io"
-	"database/sql"
-	"strings"
 	_ "github.com/lib/pq"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
 )
 
 type Database struct {
-	db	*sql.DB
+	db *sql.DB
 }
 
 type Api struct {
-	server *http.Server
+	server   *http.Server
 	database *Database
 }
 
 type Record struct {
-	Id	string	`json: "id"`
-	Price	float64	`json: "price"`
-	ExpDate string	`json: "expiration_date"`
-
+	Id      string  `json: "id"`
+	Price   string  `json: "price"`
+	ExpDate string  `json: "expiration_date"`
 }
 
-func (d *Database) processNewFile(input io.Reader) error {
+func csvReader(input io.Reader, records chan Record){
 	// Copy things and process them
 	r := csv.NewReader(input)
 
 	for {
-		row, err := r.Read();
+		row, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return err
+			log.Fatal(err)
 		}
+		records <- Record{row[0], row[1], row[2]}
+	}
+	close(records)
+}
 
-		// In production, I would validate that all these values
-		// are in the format we expect them to be, including that
-		// the UUID is structurally valid
-
+func (d *Database) insertRecord(records chan Record){
+	for record := range records {
 		stmt, err := d.db.Prepare("INSERT INTO promotions (id, price, exp_date) VALUES ($1,$2,$3)")
 		if err != nil {
-			return err
+			log.Fatal(err)
 		}
 		defer stmt.Close()
-
-		stmt.Exec(row[0], row[1], row[2])
+		stmt.Exec(record.Id, record.Price, record.ExpDate)
 	}
+}
 
-	// Once we've build the staging file tree, we'll rename it to be production
-	// and delete the old production
+func (d *Database) processNewFile(input io.Reader) error {
+	var wg sync.WaitGroup
+	c := make(chan Record)
 
+	for i := 0; i< 90; i++{
+		go d.insertRecord(c)
+		wg.Add(1)
+	}
+	defer wg.Done()
+
+	csvReader(input, c)
+	wg.Wait()
 
 	return nil
 }
@@ -70,8 +82,7 @@ func (d *Database) readPromotion(id string) ([]byte, error) {
 	if err != nil {
 		return []byte{}, err
 	}
-
-	value, err := json.Marshal(r);
+	value, err := json.Marshal(r)
 
 	return value, err
 }
@@ -79,7 +90,7 @@ func (d *Database) readPromotion(id string) ([]byte, error) {
 func NewDatabase() (*Database, error) {
 	// In production, we'd use something like a DATABASE_URL environment
 	// variable to get this value
-	db, err := sql.Open("postgres", "postgres://pg@localhost/promodb?sslmode=disable")
+	db, err := sql.Open("postgres", "postgres://postgres@localhost/promodb?sslmode=disable")
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +110,7 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 	serveMux.HandleFunc("/promotions", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == "POST" {
 			err := database.processNewFile(req.Body)
-			if err != nil{
+			if err != nil {
 				fmt.Printf("ERROR: %s\n", err)
 			}
 			defer req.Body.Close()
@@ -111,13 +122,10 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 
 	serveMux.HandleFunc("/promotions/", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == "GET" {
-			// where we look it up and write to response of a specific promotion
-			// TODO: figure out promoId := ...
-			// database.readPromotion(promoId)
-			_id := strings.Split(req.URL.Path)
-			id = _id[len(_id)]
+			_id := strings.Split(req.URL.Path, "/")
+			id := _id[len(_id)-1]
 			value, err := database.readPromotion(id)
-			fmt.Printf("%+v %+v\n", value, err);
+			//fmt.Printf("%+v %+v\n", value, err)
 			if err != nil {
 				fmt.Printf("ERROR: %s\n", err)
 			}
@@ -136,7 +144,7 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 	})
 
 	server := http.Server{
-		Addr: address,
+		Addr:    address,
 		Handler: serveMux,
 	}
 	api := Api{&server, database}
@@ -144,7 +152,7 @@ func NewApiServer(address, rootDir string) (*Api, error) {
 }
 
 func main() {
-	server, err := NewApiServer(":8080", "./root");
+	server, err := NewApiServer(":1321", "./root")
 	if err != nil {
 		fmt.Printf("ERROR: %s", err)
 	}
