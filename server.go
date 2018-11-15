@@ -23,12 +23,12 @@ type Api struct {
 }
 
 type Record struct {
-	Id      string  `json: "id"`
-	Price   string  `json: "price"`
-	ExpDate string  `json: "expiration_date"`
+	Id      string `json: "id"`
+	Price   string `json: "price"`
+	ExpDate string `json: "expiration_date"`
 }
 
-func csvReader(input io.Reader, records chan Record){
+func csvReader(input io.Reader, records chan Record) {
 	// Copy things and process them
 	r := csv.NewReader(input)
 
@@ -45,7 +45,7 @@ func csvReader(input io.Reader, records chan Record){
 	close(records)
 }
 
-func (d *Database) insertRecord(records chan Record){
+func (d *Database) insertRecord(records chan Record) {
 	for record := range records {
 		stmt, err := d.db.Prepare("INSERT INTO promotions (id, price, exp_date) VALUES ($1,$2,$3)")
 		if err != nil {
@@ -60,11 +60,12 @@ func (d *Database) processNewFile(input io.Reader) error {
 	var wg sync.WaitGroup
 	c := make(chan Record)
 
-	for i := 0; i< 90; i++{
+	for i := 0; i < 90; i++ {
 		go d.insertRecord(c)
 		wg.Add(1)
+		defer wg.Done()
 	}
-	defer wg.Done()
+	//defer wg.Done()
 
 	csvReader(input, c)
 	wg.Wait()
