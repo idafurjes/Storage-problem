@@ -12,14 +12,14 @@ Subsequently, run this additional command to set up the DB:
 
 <code>
 docker exec -it promo-postgres /bin/bash/ -c "createuser -U postgres && createdb --owner postgres -U postgres promodb &&
-psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "promodb" <<-EOSQL   
-  
+psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "promodb" <<-EOSQL  
+    
     CREATE TABLE promotions (  
         id              TEXT NOT NULL UNIQUE,     
         price           REAL NOT NULL,  
         exp_date        TEXT NOT NULL  
     );
-EOSQL"  
+    EOSQL"
 </code>
 
 <h3>Using the API</h3>
