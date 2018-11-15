@@ -3,7 +3,7 @@
 I created an API that is able to insert a larger amount of records from a CSV file to a database table on POST request and returns a JSON record on GET request given the ID.
 I stored the records in a PostgreSQL database, the table is called "promotions".  
 
-<h3>Setting up test DB</h3>
+<h3>Setting up the test DB</h3>
 To set up a test database in Docker, run the following command to start a container:
 
 <code>docker run --name promo-postgres -p 5432:5432 -d postgres</code>
